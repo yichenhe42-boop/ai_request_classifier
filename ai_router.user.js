@@ -1,174 +1,203 @@
 // ==UserScript==
-// @name         AI请求分类机器人（模态提示版）
+// @name         AI请求分类机器人（通用探测版）
 // @namespace    http://tampermonkey.net/
-// @version      1.2
-// @description  检测复杂问题，弹出大提示框，建议使用本地GPU
-// @author       You
+// @version      2.3
+// @description  自动探测输入框和发送按钮，兼容 DeepSeek 最新界面
 // @match        https://chat.deepseek.com/*
 // @grant        GM_xmlhttpRequest
 // ==/UserScript==
 
 (function() {
     'use strict';
-    console.log('AI请求分类机器人已启动（模态提示版）');
+    console.log('AI请求分类机器人启动 (通用探测版)');
 
-    // 配置：本地后端地址
     const BACKEND_URL = 'http://127.0.0.1:5678/analyze';
-    // 配置：本地模型 WebUI 地址（例如 Ollama 的默认地址，可改成你自己的）
-    const LOCAL_MODEL_URL = 'http://localhost:11434';
+    const MODEL_URLS = {
+        local: 'http://localhost:11434',
+        deepseek: 'https://chat.deepseek.com/',
+        claude: 'https://claude.ai/'
+    };
+    const currentHost = window.location.hostname;
 
-    // 创建模态框函数
-    function showModal(questionText) {
-        // 如果已经存在模态框，先移除旧的
-        const existingModal = document.getElementById('ai-router-modal');
-        if (existingModal) existingModal.remove();
+    // 增强型输入框查找
+    function findInputBox() {
+        // 常见选择器列表
+        const selectors = [
+            'textarea',
+            'div[contenteditable="true"]',
+            '[contenteditable="true"]',
+            'div[role="textbox"]',
+            '.chat-input',
+            '.input-area',
+            '.message-input',
+            'div[placeholder*="输入"]',
+            'div[placeholder*="message"]'
+        ];
+        for (let sel of selectors) {
+            const el = document.querySelector(sel);
+            if (el && (el.tagName === 'TEXTAREA' || el.isContentEditable || el.getAttribute('contenteditable') === 'true')) {
+                console.log('找到输入框:', sel, el);
+                return el;
+            }
+        }
+        // 如果都没找到，尝试获取当前获得焦点的元素
+        if (document.activeElement && (document.activeElement.isContentEditable || document.activeElement.tagName === 'TEXTAREA')) {
+            console.log('使用焦点元素作为输入框:', document.activeElement);
+            return document.activeElement;
+        }
+        return null;
+    }
 
+    function findSendButton() {
+        const selectors = [
+            'button[type="submit"]',
+            'button.send-btn',
+            'button[aria-label*="send" i]',
+            'button:has(svg[data-icon="send"])',
+            'button:has(svg[data-icon="arrow-up"])',
+            'button:contains("发送")',
+            'button:contains("Send")'
+        ];
+        for (let sel of selectors) {
+            try {
+                const btn = document.querySelector(sel);
+                if (btn && btn.offsetParent !== null) return btn;
+            } catch(e) {}
+        }
+        // 遍历所有按钮，找文本或图标匹配的
+        const btns = document.querySelectorAll('button');
+        for (let btn of btns) {
+            const text = btn.innerText.toLowerCase();
+            const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+            if (text.includes('发送') || text.includes('send') || aria.includes('send') || 
+                btn.querySelector('svg[data-icon="send"], svg[data-icon="arrow-up"]')) {
+                console.log('通过内容找到发送按钮:', btn);
+                return btn;
+            }
+        }
+        return null;
+    }
+
+    // 弹窗代码（同之前的 showModal，略作简化）
+    function showModal(questionText, recommendation, targetUrl, suggestion) {
+        const existing = document.getElementById('ai-router-modal');
+        if (existing) existing.remove();
         const modal = document.createElement('div');
         modal.id = 'ai-router-modal';
-        modal.style.cssText = `
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: white;
-            color: #1e1e2f;
-            padding: 24px;
-            border-radius: 16px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-            z-index: 10000;
-            width: 460px;
-            max-width: 90vw;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            border: 2px solid #007bff;
-            text-align: left;
-        `;
-
-        const shortQuestion = questionText.length > 120 ? questionText.slice(0, 120) + '…' : questionText;
-
+        modal.style.cssText = `position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:white; color:#1e1e2f; padding:24px; border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,0.3); z-index:10000; width:500px; max-width:90vw; font-family:sans-serif; border:2px solid #007bff; text-align:left;`;
+        const shortQuestion = questionText.length > 150 ? questionText.slice(0,150)+'…' : questionText;
+        let buttonHtml = '';
+        let isSameSite = false;
+        if (recommendation === 'use_deepseek' && currentHost.includes('deepseek')) {
+            isSameSite = true;
+            buttonHtml = `<button id="ai-use-this" style="background:#28a745; color:white; border:none; padding:8px 16px; border-radius:8px; cursor:pointer;">✅ 直接使用当前页面发送</button>`;
+        } else if (recommendation === 'use_claude' && currentHost.includes('claude')) {
+            isSameSite = true;
+            buttonHtml = `<button id="ai-use-this" style="background:#28a745; color:white; border:none; padding:8px 16px; border-radius:8px; cursor:pointer;">✅ 直接使用当前页面发送</button>`;
+        } else {
+            let btnText = '';
+            if (recommendation === 'use_local') btnText = '📋 复制问题并打开本地 Ollama';
+            else if (recommendation === 'use_deepseek') btnText = '📋 复制问题并打开 DeepSeek';
+            else btnText = '📋 复制问题并打开 Claude';
+            buttonHtml = `<button id="ai-copy-target" style="background:#007bff; color:white; border:none; padding:8px 16px; border-radius:8px; cursor:pointer;">${btnText}</button>`;
+        }
         modal.innerHTML = `
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-                <h3 style="margin:0; color:#007bff;">🧠 检测到复杂问题</h3>
-                <button id="ai-close-modal" style="background:none; border:none; font-size:20px; cursor:pointer; color:#888;">&times;</button>
+            <div style="display:flex; justify-content:space-between; margin-bottom:16px;">
+                <h3 style="margin:0; color:#007bff;">🤖 智能任务分类建议</h3>
+                <button id="ai-close-modal" style="background:none; border:none; font-size:20px; cursor:pointer;">&times;</button>
             </div>
-            <p style="margin: 0 0 12px 0; font-size:14px; color:#555;">建议使用本地GPU模型处理，以获得更深度的推理和更低的成本。</p>
-            <div style="background: #f5f5f7; padding: 12px; border-radius: 8px; margin-bottom: 20px; font-size:14px; word-break: break-word;">
+            <p style="margin:0 0 12px 0; font-size:14px;">${escapeHtml(suggestion)}</p>
+            <div style="background:#f5f5f7; padding:12px; border-radius:8px; margin-bottom:20px;">
                 <strong>您的问题：</strong><br>${escapeHtml(shortQuestion)}
             </div>
             <div style="display: flex; gap: 12px; justify-content: flex-end;">
-                <button id="ai-copy-local" style="background: #007bff; color: white; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-weight: bold;">📋 复制问题并打开本地模型</button>
-                <button id="ai-continue-cloud" style="background: #e9ecef; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer;">☁️ 继续使用云端</button>
+                ${buttonHtml}
+                <button id="ai-continue" style="background:#e9ecef; border:none; padding:8px 16px; border-radius:8px;">✖️ 忽略建议</button>
             </div>
         `;
-
         document.body.appendChild(modal);
-
-        // 关闭模态框的函数
-        const closeModal = () => modal.remove();
-
-        // 关闭按钮
-        document.getElementById('ai-close-modal').addEventListener('click', closeModal);
-        // 继续使用云端
-        document.getElementById('ai-continue-cloud').addEventListener('click', closeModal);
-        // 复制并打开本地模型
-        document.getElementById('ai-copy-local').addEventListener('click', () => {
-            navigator.clipboard.writeText(questionText).then(() => {
-                alert('问题已复制到剪贴板，即将打开本地模型界面');
-                window.open(LOCAL_MODEL_URL, '_blank');
-            }).catch(() => {
-                alert('复制失败，请手动复制问题');
-                window.open(LOCAL_MODEL_URL, '_blank');
+        const close = () => modal.remove();
+        document.getElementById('ai-close-modal').addEventListener('click', close);
+        document.getElementById('ai-continue').addEventListener('click', close);
+        if (isSameSite) {
+            document.getElementById('ai-use-this').addEventListener('click', () => {
+                const input = findInputBox();
+                if (input) {
+                    if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') input.value = questionText;
+                    else input.innerText = questionText;
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    const sendBtn = findSendButton();
+                    if (sendBtn) sendBtn.click();
+                    else alert('问题已填入，请手动发送');
+                }
+                close();
             });
-            closeModal();
-        });
+        } else {
+            document.getElementById('ai-copy-target').addEventListener('click', () => {
+                navigator.clipboard.writeText(questionText).then(() => {
+                    alert('问题已复制，即将打开推荐模型页面');
+                    window.open(targetUrl, '_blank');
+                }).catch(() => alert('复制失败'));
+                close();
+            });
+        }
     }
 
-    // 简单的防XSS辅助函数
     function escapeHtml(str) {
-        return str.replace(/[&<>]/g, function(m) {
-            if (m === '&') return '&amp;';
-            if (m === '<') return '&lt;';
-            if (m === '>') return '&gt;';
-            return m;
-        }).replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, function(c) {
-            return c;
-        });
+        return str.replace(/[&<>]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m] || m));
     }
 
-    // 显示简单提示（可选，用于非复杂情况或错误）
-    function showToast(message, isError = false) {
+    function showToast(msg, isErr=false) {
         const toast = document.createElement('div');
-        toast.textContent = message;
-        toast.style.cssText = `
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            background: ${isError ? '#d32f2f' : '#28a745'};
-            color: white;
-            padding: 10px 16px;
-            border-radius: 8px;
-            z-index: 9999;
-            font-family: sans-serif;
-            font-size: 14px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-        `;
+        toast.textContent = msg;
+        toast.style.cssText = `position:fixed; bottom:20px; right:20px; background:${isErr?'#d32f2f':'#28a745'}; color:white; padding:10px 16px; border-radius:8px; z-index:9999; font-size:14px;`;
         document.body.appendChild(toast);
-        setTimeout(() => toast.remove(), 3000);
+        setTimeout(()=>toast.remove(),3000);
     }
 
-    // 调用后端分析复杂度
     function analyzeComplexity(text, callback) {
         GM_xmlhttpRequest({
             method: 'POST',
             url: BACKEND_URL,
-            headers: { 'Content-Type': 'application/json' },
-            data: JSON.stringify({ text: text }),
-            onload: function(res) {
-                try {
-                    const data = JSON.parse(res.responseText);
-                    callback(null, data);
-                } catch (e) {
-                    callback(e, null);
-                }
+            headers: {'Content-Type':'application/json'},
+            data: JSON.stringify({text: text}),
+            onload: (res) => {
+                try { callback(null, JSON.parse(res.responseText)); } catch(e) { callback(e, null); }
             },
-            onerror: function(err) {
-                callback(err, null);
-            }
+            onerror: (err) => callback(err, null)
         });
     }
 
-    // 等待输入框并绑定事件
-    function waitForInput() {
-        const input = document.querySelector('textarea, div[role="textbox"], [contenteditable="true"]');
-        if (input) {
-            console.log('找到输入框，绑定事件');
-            let timer;
-            input.addEventListener('input', function(e) {
-                const text = e.target.value || e.target.innerText;
-                if (text.length < 5) return;
-                clearTimeout(timer);
-                timer = setTimeout(() => {
-                    console.log('触发分析，内容：', text);
-                    analyzeComplexity(text, (err, result) => {
-                        if (err) {
-                            console.error('后端请求失败', err);
-                            showToast('❌ 无法连接本地服务，请确认Python服务已启动', true);
-                            return;
-                        }
-                        console.log('后端返回：', result);
-                        if (result.is_complex) {
-                            showModal(text);
-                        } else {
-                            // 简单问题：可以静默，或取消下一行注释测试
-                            // showToast('✅ 简单问题，走云端', false);
-                        }
-                    });
-                }, 800);
-            });
-        } else {
-            console.log('未找到输入框，重试');
-            setTimeout(waitForInput, 500);
+    // 监听输入事件（回到输入触发但增加防抖）
+    function bindInputEvents() {
+        const input = findInputBox();
+        if (!input) {
+            setTimeout(bindInputEvents, 1000);
+            return;
+        }
+        console.log('已绑定输入框，开始监听输入');
+        let timer;
+        const handler = () => {
+            const text = input.value || input.innerText || '';
+            if (text.length < 5) return;
+            clearTimeout(timer);
+            timer = setTimeout(() => {
+                console.log('输入稳定，触发分析');
+                analyzeComplexity(text, (err, result) => {
+                    if (err) { showToast('后端未启动', true); return; }
+                    if (result && result.recommendation) {
+                        showModal(text, result.recommendation, result.target_url, result.suggestion);
+                    }
+                });
+            }, 800);
+        };
+        input.addEventListener('input', handler);
+        // 对于 contenteditable，也需要监听
+        if (input.isContentEditable) {
+            input.addEventListener('blur', handler);
         }
     }
 
-    waitForInput();
+    // 启动
+    bindInputEvents();
 })();

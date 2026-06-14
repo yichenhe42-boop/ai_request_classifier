@@ -1,37 +1,56 @@
-# AI请求分类机器人 🤖
+# AI请求分类机器人 🤖 (智能推荐版)
 
 ## 一句话介绍
-> 一个浏览器油猴脚本 + 本地Python服务，自动判断你在AI对话中输入的问题复杂度，当检测到复杂问题时会弹窗建议你使用本地GPU处理，帮你节省云端API费用并获得更深度的推理。
+> 一个浏览器油猴脚本 + 本地Python服务，自动判断你在AI对话中输入的任务类型，**将简单任务（文本概括、问答）推荐给本地模型处理，将复杂任务（写作、代码、数学）推荐给合适的云端模型（DeepSeek/Claude）**，从而实现降本增效。
 
 ## 功能演示
-![弹窗截图](./images/screenshot.png)
+（示意图：弹窗显示“推荐使用本地模型”或“推荐使用 Claude”等）
 
 ## 工作原理
-1. 你在DeepSeek（或其他支持的AI聊天页面）输入问题
-2. 油猴脚本捕获输入内容，发送到本地Python后端
-3. 后端基于规则（关键词+长度）计算复杂度分数
-4. 若判定为复杂（`is_complex: true`），弹出一个模态框：
-   - 显示你的问题
-   - 提供“复制问题并打开本地模型”按钮
-   - 允许“继续使用云端”
-5. 你可以一键将复杂问题转移到本地运行的LLM（如Ollama、LM Studio）中处理
+1. 你在 DeepSeek 聊天框输入问题
+2. 油猴脚本捕获内容，发送到本地 Python 后端
+3. 后端基于规则识别任务类型：
+   - 文本处理类（总结、阅读回答）→ 推荐本地模型 (Ollama)
+   - 写作类 → 推荐 DeepSeek（高性价比）
+   - 代码/数学类 → 推荐 Claude（最强推理）
+4. 弹窗显示建议，并提供“复制问题并打开推荐模型”按钮
+5. 用户可一键跳转至对应模型界面，粘贴问题进行高效处理
 
-## 如何安装使用
+## 为什么这样分配？
+- **本地模型**：适合简单、轻量的文本处理，节省 API Token，响应快。
+- **DeepSeek**：写作类任务对推理要求中等，DeepSeek 成本低、效果不错。
+- **Claude**：代码生成和数学推导需要强逻辑，Claude 3.5/Opus 表现最佳。
+
+## 安装使用
 
 ### 前提条件
-- 安装了 [Tampermonkey](https://www.tampermonkey.net/) 浏览器扩展
-- Python 3.7+ 环境
+- Tampermonkey 浏览器扩展
+- Python 3.7+
+- （可选）本地 LLM 服务，如 [Ollama](https://ollama.com/)
 
 ### 步骤
-1. **下载脚本**：从本仓库获取 `ai_router.user.js` 和 `backend.py`
-2. **安装依赖**：`pip install flask flask_cors`
-3. **启动后端**：`python backend.py`（保持终端运行）
-4. **安装油猴脚本**：在Tampermonkey中新建脚本，粘贴 `ai_router.user.js` 内容并保存
-5. 访问 [DeepSeek Chat](https://chat.deepseek.com)，输入一个复杂问题（如“解释机器学习中的过拟合”）
-6. 你会看到一个弹窗，按提示操作即可
+1. **下载本仓库文件**
+2. **安装 Python 依赖**：`pip install flask flask_cors`
+3. **启动后端服务**：`python app.py`（保持终端运行）
+4. **安装油猴脚本**：在 Tampermonkey 中新建脚本，粘贴 `ai_router.user.js` 内容并保存
+5. **访问 DeepSeek Chat**：https://chat.deepseek.com ，输入任意问题（例如“写一篇关于春天的作文”），即可看到弹窗建议
 
 ### 自定义配置
-- 修改后端 `backend.py` 中的 `complex_indicators` 列表和阈值 `score >= 2`
-- 修改油猴脚本中的 `LOCAL_MODEL_URL` 为你本地模型服务的地址（例如Ollama默认 `http://localhost:11434`）
+- 修改 `app.py` 中的关键词列表，调整任务分类规则
+- 修改 `ai_router.user.js` 中的 `MODEL_URLS` 对象，更改推荐模型的跳转地址
+- 调整判断阈值（如文本长度触发条件）
 
-## 项目结构
+## 项目文件说明
+- `app.py` : 本地 Flask 后端，负责任务分类
+- `ai_router.user.js` : 油猴脚本，负责页面交互和弹窗
+- `README.md` : 本说明文档
+
+## 常见问题
+**Q: 为什么每个问题都会弹窗？**  
+A: 新版会在每次输入后都给出建议（不再是仅复杂问题），因为每个任务都有最佳推荐。如果不喜欢频繁弹窗，可修改脚本中的 `showModal` 调用条件（例如限制频率）。
+
+**Q: 如何只让本地模型处理所有事情？**  
+A: 修改后端 `classify_task` 函数，始终返回 `recommendation = "use_local"`。
+
+**Q: 支持其他 AI 网站吗？**  
+A: 可以修改脚本开头的 `@match` 规则，例如 `https://chat.openai.com/*`，但部分网站可能需要调整输入框选择器。
